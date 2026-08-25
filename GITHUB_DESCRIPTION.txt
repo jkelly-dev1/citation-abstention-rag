@@ -1,0 +1,1 @@
+RAG that refuses to guess: every served claim carries a citation the system verified back to an exact character span, unverifiable claims are dropped, and below threshold it abstains with a reason code. Scoped retrieval, hash-chained audit log, and an eval gate that fails CI on regression. Every claim mapped to a test.

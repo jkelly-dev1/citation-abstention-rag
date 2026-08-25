@@ -1,0 +1,10 @@
+# Runtime and test dependencies for CI. Retrieval and verification are pure
+# Python: no vector database, no embedding service, no ML runtime.
+pydantic>=2.7,<3
+pydantic-settings>=2.3,<3
+pytest>=8,<10
+
+# Optional real-model providers. Both are imported lazily and are not needed
+# for the offline test suite, the demo, or the eval gate.
+# anthropic>=0.40
+# openai>=1.40
