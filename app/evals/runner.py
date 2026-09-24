@@ -10,7 +10,20 @@ rather than a correctness one.
 using only the offsets recorded in the result. It does not reuse the retrieval
 path, so a bug that made verification agree with itself would still be caught.
 
-The gate runs against the deterministic mock provider on purpose. It measures
+There are two precision metrics, and the difference matters.
+`citation_precision` is measured over served citations only, and it is an
+invariant, not a discriminator: the policy cannot serve an unsupported claim,
+and a claim is supported only if at least one citation verified. The shipped
+mock emits exactly one citation per claim, so the value is 1.000 by
+construction and a threshold on it asserts that the invariant still holds. It
+moves only when a model offers several citations for one claim and some of
+them fail. `model_citation_precision` is measured over every citation the
+model produced, served or dropped, so it is the one that reports how often
+the model cited well, and on the golden set it is well below 1.000 because the
+cases tagged "fabrication" script bad citations. Neither number is a threshold
+on the other.
+
+The gate runs against the deterministic mock provider. It measures
 the pipeline, not the model of the day: the expected reason codes encode which
 guardrail should fire for each case, and a live model would move them around
 run to run. Real model behavior is captured in SAMPLE_RUN.md instead.
@@ -126,6 +139,8 @@ def run_evals(
 
     served_citations = 0
     verified_citations = 0
+    model_citations = 0
+    model_verified_citations = 0
     unsupported_served = 0
     bad_offsets = 0
     for outcome in outcomes:
@@ -136,6 +151,14 @@ def run_evals(
                 served_citations += 1
                 if citation.ok:
                     verified_citations += 1
+        # Dropped claims are counted too, and only here. They are the ones the
+        # model got wrong, so a metric that skips them, like
+        # `citation_precision` above, cannot report on the model at all.
+        for claim in list(outcome.result.claims) + list(outcome.result.dropped):
+            for citation in claim.citations:
+                model_citations += 1
+                if citation.ok:
+                    model_verified_citations += 1
         bad_offsets += _check_offsets(outcome.result)
 
     should_abstain = [item for item in outcomes if item.case.expect == "abstain"]
@@ -153,6 +176,9 @@ def run_evals(
         "citation_precision": (
             verified_citations / served_citations if served_citations else 1.0
         ),
+        "model_citation_precision": (
+            model_verified_citations / model_citations if model_citations else 1.0
+        ),
         "unsupported_served": float(unsupported_served),
         "bad_offsets": float(bad_offsets),
         "abstention_recall": (
@@ -163,6 +189,45 @@ def run_evals(
         ),
     }
     return EvalReport(outcomes=outcomes, metrics=metrics)
+
+
+def held_out_miss_rate(settings: Settings | None = None) -> float:
+    """Fraction of the held-out paraphrases the system fails to answer well.
+
+    A miss is an abstention on an answerable question, or an answer whose
+    citations do not come from the document that actually holds the answer.
+    The second counts because an answer drawn from the wrong place is not a
+    better outcome than silence.
+
+    This is not a gate and must not become one while the questions share an
+    author with the golden set. See `app/evals/paraphrases.py`.
+    """
+    import tempfile
+
+    from app.audit import AuditLog
+    from app.evals.paraphrases import HELD_OUT
+    from app.pipeline import answer_question
+
+    settings = settings or get_settings()
+    if not HELD_OUT:
+        return 0.0
+    misses = 0
+    with tempfile.TemporaryDirectory() as directory:
+        audit = AuditLog(Path(directory) / "held-out.jsonl", settings.audit_hmac_key)
+        for case in HELD_OUT:
+            result = answer_question(
+                case.question, {"public", "internal"}, settings,
+                provider=MockProvider(), audit=audit,
+            )
+            docs = {
+                citation.doc_id
+                for claim in result.claims
+                for citation in claim.citations
+                if citation.ok
+            }
+            if result.status != "answered" or case.expect_doc not in docs:
+                misses += 1
+    return misses / len(HELD_OUT)
 
 
 def gate_failures(report: EvalReport, settings: Settings | None = None) -> list[str]:

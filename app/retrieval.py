@@ -31,8 +31,24 @@ STOPWORDS = frozenset(
 _TOKEN = re.compile(r"[a-z0-9][a-z0-9.,]*")
 
 # A light suffix stemmer, so "approves", "approved", and "approval" match. It
-# is deliberately crude and dependency free; a real analyzer drops in here
-# without touching anything else.
+# is crude and dependency free; a real analyzer drops in here without
+# touching anything else.
+#
+# It strips one suffix, so it does not collapse every word family, and the
+# example above is one it happens to get right:
+#     approves/approved/approval      -> approv          (one stem, as claimed)
+#     notify/notifies/notified/-ication -> notify/notifi/notific  (three)
+#     validate/validated/validation   -> validat/valid   (two)
+#     condition/conditions/conditional -> condit/condition (two)
+# A question phrased around one member of a split family scores lower against
+# a passage phrased around another. No golden case turns on it, because the
+# co-occurring exact tokens carry those questions, so the weakness is latent.
+#
+# Applying the same rules until no suffix applies would be worse. It fixes
+# `conditional` and splits `expense`/`expenses` into expen/expens, the exact
+# collision the trailing-"e" rule below exists to prevent. A correct fix is a
+# real stemmer, the drop-in mentioned above, not another rule bolted onto
+# this one.
 _SUFFIXES = (
     "ations",
     "ation",

@@ -9,11 +9,20 @@ paraphrase of it.
 from __future__ import annotations
 
 from functools import lru_cache
+import hashlib
 from pathlib import Path
 
 from app.models import Chunk
 
 FRONT_MATTER_DELIM = "---"
+
+#: The scope a document gets when its front matter does not name one.
+#: No requester is expected to hold this label, so an unlabeled document is
+#: withheld from everyone until somebody classifies it. Defaulting to a real
+#: clearance instead would mean that forgetting a `scope:` line silently
+#: publishes the document to every requester who holds that clearance, and
+#: the failure would be invisible because the document reads normally.
+UNLABELED_SCOPE = "unlabeled"
 
 
 def _parse_front_matter(raw: str) -> tuple[dict[str, str], int]:
@@ -37,7 +46,14 @@ def chunk_document(raw: str, path: Path) -> list[Chunk]:
     meta, body_start = _parse_front_matter(raw)
     doc_id = meta.get("doc_id", path.stem)
     title = meta.get("title", path.stem)
-    scope = meta.get("scope", "internal")
+    scope = meta.get("scope", UNLABELED_SCOPE)
+    # `version:` is in the front matter of every shipped document, and a
+    # reader who bumps it has every reason to expect it in the trace.
+    version = meta.get("version", "")
+    # The digest is over the whole file, front matter included. A scope line
+    # edited to widen who can see a document is exactly the change an auditor
+    # needs to detect, and a digest over the body alone would miss it.
+    doc_sha256 = hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
     # Collect heading positions so each section's body offsets are exact.
     headings: list[tuple[int, str]] = []
@@ -68,6 +84,8 @@ def chunk_document(raw: str, path: Path) -> list[Chunk]:
                 doc_id=doc_id,
                 title=title,
                 scope=scope,
+                version=version,
+                doc_sha256=doc_sha256,
                 heading=heading,
                 text=text,
                 source_path=str(path),
@@ -89,3 +107,15 @@ def load_corpus(corpus_dir: str | Path) -> list[Chunk]:
 @lru_cache
 def cached_corpus(corpus_dir: str) -> tuple[Chunk, ...]:
     return tuple(load_corpus(corpus_dir))
+
+
+def corpus_digest(chunks) -> str:
+    """One digest over every document the corpus holds, order-independent.
+
+    Built from the per-document sha256 values instead of by re-reading the
+    directory, so the record says what the request actually retrieved from and
+    not what happens to be on disk when somebody asks later. Sorted, so two
+    runs over the same documents agree whatever order the loader produced.
+    """
+    digests = sorted({chunk.doc_sha256 for chunk in chunks})
+    return hashlib.sha256("".join(digests).encode("utf-8")).hexdigest()

@@ -121,4 +121,34 @@ GOLDEN_SET: tuple[GoldenCase, ...] = (
         note="One real claim and one fabricated claim: below the supported ratio.",
         tags=("fabrication",),
     ),
+    # Three guardrails the unit tests pin, exercised by the gate as well. A
+    # gate that never produces a reason code cannot regress on it, and the
+    # code could be removed with EVAL GATE PASSED still printing.
+    # negation_mismatch matters most: it catches a claim reversing the
+    # sentence it cites.
+    GoldenCase(
+        id="negated-quote",
+        question="Is written approval required above 5,000 USD?",
+        expect="abstain",
+        expect_reason="no_supported_claims",
+        note="Model quotes a real sentence and reverses it: the polarity check.",
+        tags=("fabrication",),
+    ),
+    GoldenCase(
+        id="truncated-reply",
+        question="How long are trade confirmations retained in full?",
+        expect="abstain",
+        expect_reason="model_output_unparseable",
+        note="A length cap lands mid-object. It must abstain, not raise.",
+        tags=("robustness",),
+    ),
+    GoldenCase(
+        id="honest-decline",
+        question="Who approves an expense above 5,000 USD, precisely?",
+        expect="abstain",
+        expect_reason="model_declined",
+        note="The model read the context and said no. Not the same as a reply "
+             "nobody could read, and it gets a different reason code.",
+        tags=("robustness",),
+    ),
 )

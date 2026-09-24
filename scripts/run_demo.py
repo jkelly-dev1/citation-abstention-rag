@@ -75,7 +75,7 @@ def main() -> int:
     log_path = Path(DEMO_LOG)
     if log_path.exists():
         log_path.unlink()
-    audit = AuditLog(log_path)
+    audit = AuditLog(log_path, settings.audit_hmac_key)
 
     print("=" * 78)
     print("citation-abstention-rag demo")
@@ -96,7 +96,17 @@ def main() -> int:
 
     for index, (label, question, scopes) in enumerate(CASES, start=1):
         print(f"\n--- {index}. {label} " + "-" * max(0, 60 - len(label)))
-        result = answer_question(question, scopes, settings, provider, audit)
+        # A fixed request id and a fixed clock, because this output is
+        # committed to SAMPLE_RUN.md and compared byte for byte. A random uuid
+        # and a wall clock reading make the capture impossible to reproduce,
+        # and a capture that cannot be reproduced is not evidence of anything.
+        # The values are obviously synthetic so nobody mistakes them for a
+        # real run's.
+        result = answer_question(
+            question, scopes, settings, provider, audit,
+            request_id=f"demo{index:028d}",
+            now="2026-01-01T00:00:00+00:00",
+        )
         print(format_result(result))
 
     print("\n" + "=" * 78)

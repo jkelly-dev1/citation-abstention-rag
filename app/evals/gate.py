@@ -19,15 +19,17 @@ from pathlib import Path
 
 from app.audit import AuditLog
 from app.config import get_settings
-from app.evals.runner import gate_failures, run_evals
+from app.evals.runner import gate_failures, held_out_miss_rate, run_evals
 
 
 def main() -> int:
     settings = get_settings()
     # The gate writes its audit trail to a temporary log so a CI run never
-    # appends to the committed sample log.
+    # appends to whatever is in the working tree's audit/ directory. Nothing
+    # under audit/ is committed (.gitignore excludes audit/*.jsonl), so the
+    # log this avoids touching is the developer's local one.
     with tempfile.TemporaryDirectory() as directory:
-        audit = AuditLog(Path(directory) / "eval.audit.jsonl")
+        audit = AuditLog(Path(directory) / "eval.audit.jsonl", settings.audit_hmac_key)
         report = run_evals(settings, audit=audit)
         chain_ok = audit.verify_chain()
 
@@ -35,6 +37,19 @@ def main() -> int:
     for name, value in report.metrics.items():
         print(f"  {name:<24} {value:.3f}")
     print(f"  {'audit_chain_intact':<24} {'yes' if chain_ok else 'NO'}")
+
+    # The held-out set is reported and not gated. A threshold on this number
+    # would let the author of the questions also choose the bar they must
+    # clear. It is printed so a reader can see what the over-abstention costs
+    # on phrasing the golden set does not use, and it is allowed to be bad.
+    held_out = held_out_miss_rate(settings)
+    print(f"\nHeld-out paraphrases (REPORTED, NOT GATED)")
+    print(f"  {'held_out_miss_rate':<24} {held_out:.3f}")
+    print(f"  The golden set's false_abstention_rate is "
+          f"{report.metrics['false_abstention_rate']:.3f} over questions written")
+    print(f"  by the same hand as the retriever. The held-out set asks about "
+          f"the same")
+    print(f"  corpus in different words.")
 
     failures = gate_failures(report, settings)
     if not chain_ok:

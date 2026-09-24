@@ -3,14 +3,25 @@
 Verbatim captures of `scripts/run_demo.py` against all three providers, so a
 reviewer without an API key can see exactly what the system does. Nothing is
 edited: the offsets, hashes, scores, and model wording are the ones the runs
-produced. All three were captured on 2026-07-24.
+produced. The two real model runs were captured on 2026-07-24.
 
 - [Offline run (mock provider)](#offline-run-mock-provider)
 - [Real model run (Anthropic, claude-opus-5)](#real-model-run-anthropic-claude-opus-5)
 - [Real model run (OpenAI, gpt-4o)](#real-model-run-openai-gpt-4o)
 - [What the real model runs found](#what-the-real-model-runs-found)
 
-The eval gate section at the end of each capture always runs on the mock: a regression gate has to be reproducible, and the golden set pins which
+The offline capture below is regenerated whenever the mock output changes, so
+it stays byte-identical to a fresh `python scripts/run_demo.py`. The two real
+model captures are not regenerated, because re-running them needs an API key
+and a paid call, so they are left exactly as the 2026-07-24 runs produced them.
+Their eval-gate blocks therefore predate the `model_citation_precision` metric
+and do not list it, and their audit records predate the schema that now carries
+a `request_id`, a UTC `ts`, a `settings_digest` and a `corpus_sha256`. Nothing
+was added to them to make them look current: a capture edited to match today's
+output is no longer a capture of anything.
+
+The eval gate section at the end of each capture always runs on the mock: a
+regression gate has to be reproducible, and the golden set pins which
 guardrail fires for each case. The demo cases above it use whichever provider
 is configured.
 
@@ -121,6 +132,13 @@ chain verifies  : True
 
 first record (truncated):
 {
+  "schema_version": "2",
+  "request_id": "demo0000000000000000000000000001",
+  "ts": "2026-01-01T00:00:00+00:00",
+  "settings_digest": "9afaea19cb7c0ade",
+  "corpus_sha256": "0be4ff051120709bf4f0a49a77c288f633a3372ed2f37166397d02e85e38d3ef",
+  "raw_output_sha256": "a680a907f36573df6e0422c992d01941cb4a8c0be4cb67cf4c7bdec298004a56",
+  "raw_output_length": 589,
   "question": "Who approves an expense above 5,000 USD?",
   "scopes": [
     "internal",
@@ -134,43 +152,30 @@ first record (truncated):
     {
       "chunk_id": "expense-policy#s01",
       "doc_id": "expense-policy",
-      "score": 16.3836
+      "score": 16.3836,
+      "doc_sha256": "f4821a3dcbe8d3d31f4f7cdcc4b665dde5f9c6c69040300fc9e3bac4b02ead1d"
     },
     {
       "chunk_id": "expense-policy#s02",
       "doc_id": "expense-policy",
-      "score": 2.0277
+      "score": 2.0277,
+      "doc_sha256": "f4821a3dcbe8d3d31f4f7cdcc4b665dde5f9c6c69040300fc9e3bac4b02ead1d"
     },
     {
       "chunk_id": "data-retention-standard#s04",
       "doc_id": "data-retention-standard",
-      "score": 1.7045
-    },
-    {
-      "chunk_id": "expense-policy#s04",
-      "doc_id": "expense-policy",
-      "score": 1.6821
-    }
-  ],
-  "served_claims": [
-    "Expenses above 5,000 USD require written approval from the Chief Financial Officer before the expense is incurred.",
-    "Expenses above 500 USD and up to 5,000 USD require approval from a department director."
-  ],
-  "dropped_claims": [],
-  "status": "answered",
-  "reasons": [],
-  "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
-  "record_hash": "b778ebb818f23e9edca86a2915c1afdafe57e4293bed2a9826339d7411fde0c2"
-}
+      "score": 1.7045,
+      "doc_sha256": "f6a679f1b9d247e7106be3aff9c395d5c556a38669c89f757
 
 after editing record 2 in place, chain verifies: False
 
 ==============================================================================
 Eval gate (always runs on the deterministic mock provider)
 ==============================================================================
-  cases                    13.000
-  cases_passed             13.000
+  cases                    16.000
+  cases_passed             16.000
   citation_precision       1.000
+  model_citation_precision 0.864
   unsupported_served       0.000
   bad_offsets              0.000
   abstention_recall        1.000
@@ -498,36 +503,38 @@ gate: PASS
 
 ## What the real model runs found
 
-The point of running against a real model is to find what a mock cannot. These
-are the findings, including the ones that cost a code change.
+Running against a real model shows what a mock cannot.
 
-A retrieval bug the mock could never surface. In the first Anthropic run, case 8
-abstained on a question the corpus partly answers. The cause was the stemmer:
-`expenses` stemmed to `expens` while `expense` stemmed to itself, so a question
-and the passage answering it missed each other. The mock quotes source sentences
-verbatim, so its claims and the source always shared surface forms and the
-asymmetry stayed invisible. Fixed by stripping a trailing `e` last, with a
-regression test naming this run
-(`tests/test_retrieval.py::test_stemmer_unifies_common_inflections`).
+Model wording exposes stemming gaps the mock hides. The mock quotes source
+sentences verbatim, so its claims and the source always share surface forms.
+A model that writes `expenses` against a passage that says `expense` needs the
+two to share a stem, so the stemmer strips a trailing `e` last.
+`tests/test_retrieval.py::test_stemmer_unifies_common_inflections` pins it.
 
-A collision that the threshold absorbs. The same fix made `office` and `officer`
-collide, so "How many people work in the Zurich office?" now weakly matches the
-passage naming the Chief Financial Officer: retrieval confidence 0.27 against a
-0.35 threshold. It still abstains, which is the intended failure
-direction. Pinned by
+A collision that the threshold absorbs. Stripping the trailing `e` makes
+`office` and `officer` collide, so "How many people work in the Zurich
+office?" weakly matches the passage naming the Chief Financial Officer:
+retrieval confidence 0.27 against a 0.35 threshold. It still abstains, which
+is the intended failure direction. Pinned by
 `tests/test_retrieval.py::test_a_stemmer_collision_still_lands_below_the_abstention_threshold`.
 
-The eval gate was measuring the wrong thing. Run against a live model, five
-golden cases failed on reason codes: the model declined where the mock had been
-scripted to fabricate, so the guardrail that fired was `model_declined` rather
-than `no_supported_claims`. The system behaved correctly in every one of those
-cases. The gate now always runs on the mock, because it is a regression gate for
-the pipeline, not a benchmark for the model of the day.
+The eval gate measures the pipeline, not the model. Run against a live model,
+five golden cases failed on reason codes: the model declined where the mock is
+scripted to fabricate, so the guardrail that fired was `model_declined` and not
+`no_supported_claims`. The system behaved correctly in every one of those
+cases. That is why the gate always runs on the mock.
 
 Both models quote verbatim. The failure mode this design most depends on
 avoiding, a model that paraphrases when told to copy, did not appear. Every
-citation either models served verified, and `citation_precision`,
-`unsupported_served`, and `bad_offsets` were clean on both.
+citation either model served verified, and every served span in both captures
+reproduces its quote from the corpus on disk.
+
+The `citation_precision`, `unsupported_served` and `bad_offsets` lines at the
+foot of each capture are not the evidence for that sentence. The eval gate
+always runs on the mock, as the note at the top of this file says, so those
+three numbers describe the mock run in every capture including the two real
+ones. What the paragraph above rests on is the served citations printed in the
+capture itself.
 
 Neither model invented a block id. `chunk_not_retrieved` never fired against a
 real model. That check earns its place from the mock and from
@@ -537,6 +544,12 @@ Both declined cleanly when the context did not answer the question. Cases 3, 5,
 and 7 came back `model_declined`, which is the model reaching the same
 conclusion the verifier would have enforced anyway. Two independent refusals
 have to agree before an answer is served, and here they did.
+
+These captures predate the `model_output_unparseable` reason code, which
+separates a reply the parser could not read from a model that read the
+context and said no. In them, both are reported as `model_declined`. A live
+run of these cases would report `model_output_unparseable` for an unreadable
+reply. Nothing in the captures above was edited to match.
 
 The scripted number substitution is a mock behavior only. Case 6 asks the mock
 to quote a real sentence while changing the figure in it. Both real models
@@ -553,4 +566,4 @@ The relevance gate still abstained, because the unanswerable half's words stay
 in the denominator: relevance came out at 0.33 against a 0.40 threshold. That is
 over-abstention, the direction this system prefers to fail in, but it is a real
 usability cost and it is not fixed. The fix is to score relevance against the
-answerable portion of a question rather than the whole of it.
+answerable portion of a question instead of the whole of it.

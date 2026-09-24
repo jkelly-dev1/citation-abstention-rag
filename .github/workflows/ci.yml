@@ -21,11 +21,10 @@ jobs:
         python-version: ["3.11", "3.12", "3.13"]
 
     steps:
-      # Pinned to current majors (verified against the CI-green sibling repos):
-      # checkout v7, setup-python v7.
-      - uses: actions/checkout@v7
+      # Actions are pinned to a full commit SHA, because a tag can be moved.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -49,9 +48,37 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
         run: python -m app.evals.gate
 
+      # A number typed into prose is a copy, and a copy drifts. This rebuilds
+      # every figure in README.md from the tree and exits 1 if one of them no
+      # longer appears, so the prose cannot fall behind the code silently.
+      - name: README numbers
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python scripts/check_readme_numbers.py
+
       # The demo is the offline end to end path. Running it in CI keeps
       # SAMPLE_RUN.md honest: if the demo breaks, the build breaks.
       - name: Demo (offline mock)
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: python scripts/run_demo.py
+
+      # The eval gate runs a mock that behaves well except on a few scripted
+      # questions, so it demonstrates the guardrails on those questions. This
+      # runs a provider that attacks the verifier on every case (fabricated
+      # quote, unretrieved chunk id, reversed polarity, changed figure, and a
+      # fabricated second citation) and exits 1 if a single unsupported claim
+      # reaches the caller.
+      - name: Adversarial run (hostile provider)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python scripts/adversarial_run.py
+
+      # A document with no `scope:` line is withheld from every requester,
+      # correctly and silently. This makes the fail-closed visible, so a
+      # corpus edit that quietly removes a document from every answer breaks
+      # the build instead of being discovered by a reader.
+      - name: Corpus check
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m app.cli corpus-check

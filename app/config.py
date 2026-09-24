@@ -6,6 +6,8 @@ named, documented, and settable rather than buried in the code.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from functools import lru_cache
 
@@ -19,11 +21,21 @@ def _env_file() -> str:
 
 
 class Settings(BaseSettings):
+    # `env_file` IS RESOLVED PER CONSTRUCTION, NOT ONCE AT IMPORT.
+    # `env_file=_env_file()` in this class body is a single expression
+    # evaluated when the module is first imported, so the ENV_FILE in force at
+    # import time was baked in for the life of the process: setting a
+    # different ENV_FILE and constructing Settings() again silently re-read
+    # the FIRST file. The documented one-shot CLI usage sets the variable
+    # before the process starts and never noticed; a long-lived process that
+    # switches credentials files would have read the wrong one..
     model_config = SettingsConfigDict(
-        env_file=_env_file(),
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    def __init__(self, **values):
+        super().__init__(_env_file=_env_file(), **values)
 
     # --- Provider ------------------------------------------------------------
     # "mock" (default, offline, deterministic), "anthropic", or "openai".
@@ -72,6 +84,13 @@ class Settings(BaseSettings):
 
     # --- Audit ---------------------------------------------------------------
     audit_log_path: str = "audit/audit.log.jsonl"
+    # Optional HMAC key for the audit chain. Unset is the default and is a
+    # real choice: unkeyed, the chain detects an in-place edit but not an
+    # editor who recomputes the whole chain, which is integrity against
+    # accident and not against an adversary. Set it from the environment or an
+    # ENV_FILE outside the repository, never from a value committed here, and
+    # re-chaining requires the key. See the module docstring in app/audit.py.
+    audit_hmac_key: str | None = None
 
     # --- Eval gate -----------------------------------------------------------
     eval_min_citation_precision: float = 1.0
@@ -83,6 +102,27 @@ class Settings(BaseSettings):
             "eval_max_false_abstention_rate", "eval_max_false_abstain_rate"
         ),
     )
+
+
+    def digest(self) -> str:
+        """A fingerprint of the thresholds in force, for the audit record.
+
+        "Decided under what rules" is the auditor's second question. Without
+        this, a threshold loosened between two runs would leave both records
+        looking identical. Only the decision-affecting settings go in. Paths
+        and keys are excluded, because a record that changed because somebody
+        moved the log file would be noise, and because a digest over a secret
+        is a secret's shadow.
+        """
+        decisive = {
+            name: getattr(self, name)
+            for name in sorted(type(self).model_fields)
+            if name.startswith(("min_", "max_", "eval_", "require_"))
+            or name in {"top_k", "retrieval_saturation", "agent_provider"}
+        }
+        canonical = json.dumps(decisive, sort_keys=True, separators=(",", ":"),
+                               default=str)
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
 @lru_cache

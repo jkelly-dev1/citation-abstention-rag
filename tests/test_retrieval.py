@@ -106,3 +106,26 @@ def test_ranking_prefers_the_chunk_that_answers_the_question(chunks, settings):
 def test_bm25_scores_are_zero_for_absent_terms(chunks):
     index = BM25Index(chunks)
     assert index.score(tokenize("zurich helsinki"), 0) == 0.0
+
+
+def test_the_stemmer_does_not_collapse_every_word_family():
+    """A known-limitation pin, written to fail when a real analyzer lands.
+
+    The stemmer strips one suffix, so it collapses the family its own comment
+    advertises and splits others. This pins the limitation as it is, so that
+    swapping in a real analyzer is a visible, deliberate change, and the
+    README bullet describing it cannot stop being true in either direction
+    unnoticed.
+
+    Applying the same rules until no suffix applies would be worse: it fixes
+    `conditional` and splits `expense`/`expenses`, the collision the
+    trailing-"e" rule exists to prevent.
+    """
+    # The family the comment advertises really does collapse.
+    assert len({stem(w) for w in ("approves", "approved", "approval")}) == 1
+    # The families it splits stay split. If a real analyzer lands, these go
+    # red and the README bullet comes out with them.
+    assert len({stem(w) for w in ("notify", "notifies", "notification")}) > 1
+    assert len({stem(w) for w in ("validate", "validation")}) > 1
+    # The collision the trailing-"e" rule prevents must stay prevented.
+    assert stem("expense") == stem("expenses")
