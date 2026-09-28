@@ -1,4 +1,4 @@
-"""End to end: what a caller can and cannot be shown."""
+"""The whole pipeline: what a caller can and cannot be shown."""
 
 from __future__ import annotations
 
@@ -32,6 +32,53 @@ def test_unsupported_claims_never_reach_the_caller(settings, audit):
     assert result.claims == []
     assert result.answer_text == ""
     assert any("ungrounded_number" in verdict.reasons for verdict in result.dropped)
+
+
+def test_a_malformed_reply_abstains_and_is_audited(settings, audit):
+    """Valid JSON in the wrong shape is an unreadable reply: the request
+    abstains and still gets its audit record, instead of raising before the
+    record is written."""
+
+    class Malformed:
+        name = "malformed"
+        model = "malformed-v1"
+
+        def complete(self, *, question: str, context: str) -> str:
+            return '{"claims": 5}'
+
+    result = answer_question("Who approves an expense above 5,000 USD?",
+                             {"internal"}, settings, provider=Malformed(),
+                             audit=audit)
+    assert result.status == "abstained"
+    assert result.claims == []
+    records = audit.read_all()
+    assert len(records) == 1 and records[0].status == "abstained"
+    assert audit.verify_chain()
+
+
+def test_audit_show_resolves_from_any_working_directory(settings, audit,
+                                                       tmp_path, monkeypatch):
+    """A record stores the corpus path relative to where the request ran.
+    Resolved only from the working directory, it would report UNRESOLVABLE
+    from anywhere else, which reads as a corpus that moved under the record."""
+    from pathlib import Path
+
+    from app.cli import _record_resolves
+
+    # The shipped default: a corpus path relative to where the request ran.
+    # The fixture's absolute path would make this test pass without the fix.
+    monkeypatch.chdir(Path(__file__).resolve().parents[1])
+    relative = settings.model_copy(update={"corpus_dir": "corpus"})
+    answer_question("Who approves an expense above 5,000 USD?", {"internal"},
+                    relative, audit=audit)
+    record = audit.read_all()[-1]
+    assert record.served_claims
+    paths = {c.source_path for claim in record.served_claims
+             for c in claim.citations}
+    assert paths and not any(Path(p).is_absolute() for p in paths), paths
+    monkeypatch.chdir(tmp_path)
+    ok, lines = _record_resolves(record)
+    assert ok, lines
 
 
 def test_restricted_answer_is_withheld_without_clearance(settings, audit):
@@ -132,7 +179,7 @@ def test_an_empty_clearance_set_is_not_the_default_clearance(settings, audit):
     cleared_for_nothing = answer_question(question, set(), settings, audit=audit)
     assert cleared_for_nothing.status == "abstained"
     assert cleared_for_nothing.reasons == [NO_RELEVANT_SOURCE]
-    # Assert what must be absent, not only that it abstained: nothing was
+    # Assert what must be absent as well as that it abstained: nothing was
     # retrieved and no scope was silently supplied on the requester's behalf.
     assert cleared_for_nothing.scopes == []
     assert cleared_for_nothing.retrieved == []

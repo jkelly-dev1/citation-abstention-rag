@@ -1,4 +1,4 @@
-"""End to end demo.
+"""The whole pipeline, as a demo.
 
 Runs a fixed set of questions through the real pipeline, prints what a caller
 would see, then verifies the audit chain and shows what tampering with it looks

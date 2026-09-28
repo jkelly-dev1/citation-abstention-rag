@@ -27,10 +27,11 @@ else in the pipeline changes.
 from __future__ import annotations
 
 import re
+from collections import Counter
 
 from app.config import Settings, get_settings
 from app.models import Claim, ClaimVerdict, RetrievedChunk, VerifiedCitation
-from app.retrieval import content_tokens, stem
+from app.retrieval import content_tokens, stem, tokenize
 
 # Curly quotes and dashes are normalized so a model that prettifies a quote is
 # not punished for it, while the words themselves still have to match.
@@ -42,7 +43,7 @@ _TRANSLATIONS = str.maketrans(
         "”": '"',
         "–": "-",
         "—": "-",
-        " ": " ",
+        "\u00a0": " ",  # no-break space, written as an escape
     }
 )
 
@@ -81,8 +82,12 @@ _WORD_NUMBERS = {
     "forty": "40", "fifty": "50", "sixty": "60", "seventy": "70",
     "eighty": "80", "ninety": "90",
 }
+# A spelled-out number must be a whole word, and the longest spelling is
+# tried first. Without both, "seventeen" matched as "seven" and "tenant" as
+# "ten", so a claim of seventeen years was grounded by a quote of 7.
 _QUANTITY = re.compile(
-    r"(?<![\w.])(\d[\d,.]*|" + "|".join(_WORD_NUMBERS) + r")"
+    r"(?<![\w.])(\d[\d,.]*|(?:"
+    + "|".join(sorted(_WORD_NUMBERS, key=len, reverse=True)) + r")\b)"
     r"(?:\s+([A-Za-z%]+))?",
     re.IGNORECASE,
 )
@@ -97,7 +102,9 @@ _QUANTITY = re.compile(
 #: `scripts/check_readme_numbers.py` derives that figure by calling
 #: `claim_coverage` on the full sentence, so the README cannot drift from it.
 #: Weighting cannot fix this, because one token decides the meaning, so
-#: polarity is compared as a set, separately from the overlap fraction.
+#: polarity is compared separately from the overlap fraction, as a COUNT of
+#: each negation word: a set would miss a second "not" added to a quote that
+#: already has one.
 #: The words are stemmed at import so the comparison happens in the same token
 #: space `content_tokens` produces. Four of them change under `stem`
 #: ("unless" -> "unles", "neither" -> "neith", "excluding" -> "exclud",
@@ -212,23 +219,45 @@ def claim_coverage(claim_text: str, quotes: list[str]) -> float:
     return len(claim_words & quote_words) / len(claim_words)
 
 
+_CONTRACTION = re.compile(r"n['" + chr(0x2019) + r"]t" + r"\b", re.IGNORECASE)
+_NOT = stem("not")
+
+
+def polarity(text: str) -> Counter:
+    """How many times each negation word occurs, contractions included.
+
+    The tokenizer splits "don't" into "don" and "t", neither of which is a
+    negation word, so an "n't" is counted as a "not" before tokenizing.
+    """
+    counts = Counter(stem(token) for token in tokenize(text)
+                     if stem(token) in NEGATIONS)
+    contractions = len(_CONTRACTION.findall(text))
+    if contractions:
+        counts[_NOT] += contractions
+    return counts
+
+
 def negation_mismatch(claim_text: str, quotes: list[str]) -> bool:
-    """True when the claim's polarity words are not the quotes' polarity words.
+    """True when the claim's negations are not the quotes' negations.
 
     The test is symmetric. A claim that adds a negation its quote does not have
     contradicts it, and a claim that drops one the quote does have contradicts
     it just as badly. Either way the two sentences do not say the same thing,
-    and the overlap fraction cannot see the difference.
+    and the overlap fraction cannot see the difference. Negations are counted,
+    so a second "not" is a change too.
+
+    `verify_claim` passes the one sentence that carries the claim, not every
+    quote it cites: a negation in a neighboring sentence says nothing about
+    this one's polarity, and borrowing it let a reversed claim through.
 
     This over-abstains: a claim that legitimately paraphrases "no employee
     may X unless Y" into "employees may X only after Y" is refused. The README
     limits section lists this as a deliberate failure direction.
     """
-    claim_negations = content_tokens(claim_text) & NEGATIONS
-    quote_negations: set[str] = set()
+    quote_counts: Counter = Counter()
     for quote in quotes:
-        quote_negations |= content_tokens(quote) & NEGATIONS
-    return claim_negations != quote_negations
+        quote_counts += polarity(quote)
+    return polarity(claim_text) != quote_counts
 
 
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
@@ -363,7 +392,7 @@ def verify_claim(
     if verified_quotes and coverage < settings.min_claim_coverage:
         reasons.append("claim_not_covered_by_quote")
 
-    if verified_quotes and negation_mismatch(claim.text, verified_quotes):
+    if support is not None and negation_mismatch(claim.text, [support]):
         reasons.append("negation_mismatch")
 
     if settings.require_numeric_grounding and support is not None:

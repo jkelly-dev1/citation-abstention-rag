@@ -10,8 +10,7 @@ abstains and says why. Every request, answered or refused, lands in a hash
 chained audit log.
 
 It runs fully offline on a deterministic mock provider and switches to a real
-model (Anthropic or OpenAI) with two environment variables. It has been run
-end to end against `claude-opus-5` and `gpt-4o`; both captures are in
+model (Anthropic or OpenAI) with two environment variables. It has been run through the whole pipeline against `claude-opus-5` and `gpt-4o`; both captures are in
 `SAMPLE_RUN.md`, along with what those runs show that the mock cannot.
 
 ## The problem it addresses
@@ -66,11 +65,13 @@ Four controls, all implemented here:
 | A citation to a chunk retrieval did not return is refused | `tests/test_verify.py::test_citation_to_a_chunk_that_was_not_retrieved_is_rejected` |
 | A real quote with a changed number is unsupported | `tests/test_verify.py::test_claim_quoting_a_real_sentence_but_stating_another_number_is_unsupported` (mutation-checked: disable numeric grounding and it fails) |
 | A claim whose content is absent from its quote is unsupported | `tests/test_verify.py::test_claim_whose_content_is_absent_from_its_quote_is_unsupported` |
+| Polarity is read from the sentence that carries the claim, counts each negation, and reads "n't" as "not" | `tests/test_verify.py::test_polarity_is_read_from_the_supporting_sentence`, `::test_a_second_negation_is_a_change_of_polarity`, `::test_a_contracted_negation_is_a_negation` |
+| A spelled-out number is matched as a whole word, so "seventeen" is 17 and "tenant" is not a number | `tests/test_verify.py::test_a_spelled_out_number_is_matched_as_a_whole_word` |
 | A claim that negates its own quote is unsupported, and a faithful one is not | `tests/test_verify.py::test_a_claim_that_negates_its_own_quote_is_unsupported`, `::test_a_faithful_claim_is_not_punished_by_the_negation_check` (mutation-checked: drop the polarity branch and the first fails; make it always fire and the second does) |
 | An empty or whitespace quote is refused, not resolved to the start of the chunk | `tests/test_verify.py::test_an_empty_or_whitespace_quote_is_refused` (mutation-checked: delete the guard in `locate_quote` and it fails) |
 | Quote matching tolerates whitespace, case, and curly quotes | `tests/test_verify.py::test_quote_matching_tolerates_whitespace_case_and_curly_quotes` |
 | Out of scope documents are never retrieved | `tests/test_retrieval.py::test_out_of_scope_chunks_are_never_returned` |
-| The scope filter runs before scoring, not after | `tests/test_retrieval.py::test_scope_filter_runs_before_scoring` (mutation-checked: move the filter after scoring and it fails) |
+| The scope filter runs before scoring, not after: restricted text does not move a requester's scores or confidence | `tests/test_retrieval.py::test_scope_filter_runs_before_scoring` (mutation-checked: move the filter after scoring and it fails) |
 | The same question answers only when the requester is cleared | `tests/test_pipeline.py::test_restricted_answer_is_withheld_without_clearance` |
 | A requester cleared for nothing is not silently given the default clearance | `tests/test_pipeline.py::test_an_empty_clearance_set_is_not_the_default_clearance` (mutation-checked: restore the truthiness coercion and it fails) |
 | A corpus document with no scope label is withheld, not served | `tests/test_corpus.py::test_a_document_with_no_scope_label_is_withheld_rather_than_served` (mutation-checked: default the label to `internal` and it fails) |
@@ -81,7 +82,8 @@ Four controls, all implemented here:
 | Relevance is scored over the served answer, not over the quotes it cites | `tests/test_policy.py::test_relevance_is_scored_over_the_answer_not_over_its_quotes` (mutation-checked: put the quotes back in the denominator and it fails) |
 | Unsupported claims never reach the caller | `tests/test_pipeline.py::test_unsupported_claims_never_reach_the_caller` |
 | Every request writes exactly one audit record | `tests/test_pipeline.py::test_every_request_writes_one_audit_record_and_the_chain_verifies` |
-| Editing, reordering, or deleting an audit record is detected | `tests/test_audit.py::test_editing_a_past_record_breaks_the_chain`, `::test_reordering_records_breaks_the_chain`, `::test_deleting_a_middle_record_breaks_the_chain` |
+| Editing, reordering, or deleting an audit record is detected, except removing the last records, which leaves a shorter chain that still verifies | `tests/test_audit.py::test_editing_a_past_record_breaks_the_chain`, `::test_reordering_records_breaks_the_chain`, `::test_deleting_a_middle_record_breaks_the_chain`, `::test_removing_the_last_records_is_not_detected` |
+| An edited record is reported as broken even when it claims an older schema | `tests/test_audit.py::test_an_edited_record_that_claims_an_old_schema_is_still_broken` |
 | An editor who recomputes the whole chain is caught only when a key is set | `tests/test_audit.py::test_a_keyed_chain_refuses_an_editor_who_lacks_the_key`, `::test_an_unkeyed_chain_accepts_an_editor_who_recomputes_it` (mutation-checked: make the digest ignore the key and the first fails) |
 | A corrupt log line reports a broken chain instead of a traceback | `tests/test_audit.py::test_a_corrupt_line_is_reported_as_a_broken_chain_not_a_traceback`, `::test_the_cli_reports_a_corrupt_log_instead_of_crashing` |
 | The chain link itself is covered by each record's hash | `tests/test_audit.py::test_prev_hash_is_covered_by_the_record_hash` (mutation-checked: drop `prev_hash` from the hashed payload and it fails) |
@@ -89,7 +91,7 @@ Four controls, all implemented here:
 | Provider selection needs both the name and the credential; keys never cross match | `tests/test_llm.py::test_provider_name_without_a_key_falls_back_to_mock`, `::test_keys_do_not_cross_match_between_providers` |
 | Fenced or prose wrapped model output still parses | `tests/test_llm.py::test_parser_strips_code_fences_and_surrounding_prose` |
 | Unparseable model output abstains instead of raising | `tests/test_llm.py::test_unparseable_output_abstains_instead_of_raising` |
-| Every unreadable model output shape abstains rather than raising, including a TRUNCATED reply | `tests/test_llm.py::test_every_unreadable_shape_abstains_rather_than_raising` (mutation-checked: make the JSONDecodeError branch raise and it fails) |
+| Every unreadable model output shape abstains rather than raising, including a TRUNCATED reply and valid JSON of the wrong shape, and the request is still audited | `tests/test_llm.py::test_every_unreadable_shape_abstains_rather_than_raising` (mutation-checked: make the branch taken when no complete JSON object decodes raise and it fails), `tests/test_pipeline.py::test_a_malformed_reply_abstains_and_is_audited` |
 | An unreadable reply and an honest decline get different reason codes | `tests/test_llm.py::test_an_unreadable_reply_is_not_recorded_as_the_model_declining`, `tests/test_policy.py::test_an_unreadable_reply_gets_its_own_reason_code` (mutation-checked: route a parse failure back to `model_declined` and both fail) |
 | The eval gate catches a real regression, not just its own thresholds | `tests/test_evals.py::test_gate_fails_when_numeric_grounding_is_disabled`, `::test_gate_fails_when_the_scope_filter_is_widened`, `::test_gate_fails_when_the_abstention_thresholds_are_removed` |
 | The gate's exit code, not just its output, says pass or fail | `tests/test_evals.py::test_the_gate_exit_code_says_pass_or_fail` (mutation-checked: change `return 1` to `return 0` and it fails) |
@@ -108,7 +110,7 @@ Requires Python 3.11 or newer. CI runs 3.11, 3.12, and 3.13.
 python -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
 
-pytest -q                     # 118 tests, fully offline
+pytest -q                     # 130 tests, fully offline
 python scripts/run_demo.py    # end to end demo over the whole corpus
 python -m app.evals.gate      # the CI eval gate, 16 cases
 ```
@@ -146,14 +148,21 @@ stored, so a nonzero exit there means the corpus moved under the record.
 `SAMPLE_RUN.md` holds a verbatim capture of the demo output.
 `scripts/check_readme_numbers.py`, which CI runs, re-derives the figures in
 this file from the tree (the test count, the golden-set size, the negation
-coverage value, the fabrication-case count, the held-out figures and the CI
-interpreter matrix) and requires each to appear here as an exact string. It
-also checks that every test this file cites by name exists. It prints the
-figures it does not derive, with their line numbers, so the gap is visible.
-Those are the two `1.000` invariants, which the Honest limits section explains
-are constant by construction, and example values quoted from `corpus/` (the
-approval thresholds, the revenue figure, the retention period) to illustrate a
-check.
+coverage value and the negated claim's content-word count, the
+fabrication-case count, the held-out figures and the CI interpreter matrix)
+and requires each to appear here as an exact string. It also checks that
+every test this file cites by name exists. It then lists every other number
+in this file's prose, one per line with its line number, so the gap is
+visible. Numbers inside code spans and code blocks are not prose and are not
+listed. The list holds: `17` in the claims table's spelled-number row; the
+`0` a mutation sets a threshold to in two claims-table rows; the exit codes
+`0`, `1` and `2` in the exit-code table's header and the `2` and `1` in the
+paragraph under it; the `1.0` that retrieval confidence is clipped to; the
+two `1.000` invariants, which the Honest limits section explains are
+constant by construction; and example values quoted from `corpus/` to
+illustrate a check (the `5,000` and `500` approval thresholds, the `412.6`
+revenue figure and the `7`-year retention period, each as often as the
+prose repeats it).
 
 ## How a request flows
 
@@ -229,12 +238,13 @@ JSON in fences or prose no matter what the system prompt says.
 
   Two such rewrites have their own checks: a changed figure
   (`ungrounded_number`) and a flipped polarity (`negation_mismatch`, which
-  compares negation words as a set). Negate the expense sentence ("Expenses
-  above 5,000 USD require written approval from the Chief Financial Officer
-  before the expense is incurred") and the contradiction scores 0.92 against
-  the sentence it contradicts, because the added "not" is the only one of the
-  claim's 13 content words the quote does not contain. That figure is derived
-  by `scripts/check_readme_numbers.py`, not typed here.
+  counts negation words, "n't" included, in the one sentence that carries the
+  claim). Negate the expense sentence ("Expenses above 5,000 USD require
+  written approval from the Chief Financial Officer before the expense is
+  incurred") and the contradiction scores 0.92 against the sentence it
+  contradicts, because the added "not" is the only one of the claim's 13
+  content words the quote does not contain. That figure is derived by
+  `scripts/check_readme_numbers.py`, not typed here.
 
   Anything subtler than those two still passes: a swapped actor, a changed
   condition, a reversed direction. A natural language inference model or an LLM
@@ -253,11 +263,14 @@ JSON in fences or prose no matter what the system prompt says.
   place but not an editor who changes a record and recomputes the whole chain
   from there.
   That is integrity against corruption and accident, not against an adversary.
+  Keyed or not, removing the LAST records is not detected: a truncated log is
+  a shorter chain that still verifies, because nothing outside the file
+  records its head.
   Set `AUDIT_HMAC_KEY` and re-chaining requires the key; the key then has to
   live somewhere the log writer cannot be rewritten from, which is a deployment
   question this repository does not answer. Both halves are pinned by tests,
   including the weakness.
-- Retrieval confidence is a heuristic, not a probability. It is the top BM25
+- Retrieval confidence is a heuristic and is not calibrated as a probability. It is the top BM25
   score divided by a saturation constant and clipped to 1.0. It is used as an
   abstention trigger and is calibrated against the golden set, not against a
   held out distribution.

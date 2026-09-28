@@ -198,6 +198,56 @@ def test_a_faithful_claim_is_not_punished_by_the_negation_check(chunk_by_id):
     assert verdict.reasons == []
 
 
+def test_a_contracted_negation_is_a_negation(chunk_by_id):
+    """"don't require" reverses "require" as surely as "do not require".
+
+    The tokenizer splits "don't" into "don" and "t", and neither is a
+    negation word, so the contraction is counted before tokenizing.
+    """
+    retrieved = _retrieved(chunk_by_id, "expense-policy#s01")
+    quote = "Expenses above 5,000 USD require written approval"
+    claim = Claim(
+        text="Expenses above 5,000 USD don't require written approval.",
+        citations=[Citation(chunk_id="expense-policy#s01", quote=quote)],
+    )
+    verdict = verify_claim(claim, retrieved)
+    assert not verdict.supported
+    assert "negation_mismatch" in verdict.reasons
+
+
+def test_a_second_negation_is_a_change_of_polarity():
+    """Negations are counted: a set cannot see a "not" added to a quote
+    that already has one."""
+    assert negation_mismatch("A model may not not be used.",
+                             ["A model may not be used."])
+    assert not negation_mismatch("A model may not be used.",
+                                 ["A model may not be used."])
+
+
+def test_polarity_is_read_from_the_supporting_sentence(chunk_by_id):
+    """A negation in a neighboring sentence of the same quote says nothing
+    about the sentence that carries the claim.
+
+    Compared against the whole quote, a reversed claim borrowed the "does not
+    reimburse" of the first sentence and was served, and the faithful claim
+    was refused for lacking it.
+    """
+    retrieved = _retrieved(chunk_by_id, "expense-policy#s03")
+    quote = " ".join(chunk_by_id["expense-policy#s03"].text.split())
+    faithful = Claim(
+        text="Alcohol is reimbursable only when it appears on a client "
+             "entertainment receipt.",
+        citations=[Citation(chunk_id="expense-policy#s03", quote=quote)])
+    reversed_ = Claim(
+        text="Alcohol is not reimbursable when it appears on a client "
+             "entertainment receipt.",
+        citations=[Citation(chunk_id="expense-policy#s03", quote=quote)])
+    assert verify_claim(faithful, retrieved).supported
+    verdict = verify_claim(reversed_, retrieved)
+    assert not verdict.supported
+    assert "negation_mismatch" in verdict.reasons
+
+
 def test_negation_mismatch_is_symmetric():
     """Dropping a negation contradicts the quote as surely as adding one."""
     assert negation_mismatch("The report is not required.", ["The report is required."])
@@ -304,6 +354,18 @@ def test_a_spelled_out_number_is_the_same_quantity_as_its_digits():
     # holds even with the mapping gone, because two unmapped words differ from
     # each other too.
     assert "7 years" in quantities_in("retained for seven years")
+
+
+def test_a_spelled_out_number_is_matched_as_a_whole_word():
+    """"seventeen" is 17, not a "seven" with a suffix, and "tenant" is no
+    number at all. Matched on a prefix, a claim of seventeen years was
+    grounded by a quote of 7."""
+    assert quantities_in("seventeen years") == {"17", "17 years"}
+    assert quantities_in("seventy years") == {"70", "70 years"}
+    assert quantities_in("ninety days") == {"90", "90 days"}
+    assert quantities_in("fourteen days") == {"14", "14 days"}
+    assert quantities_in("the tenant signed") == set()
+    assert quantities_in("seventeen years") != quantities_in("7 years")
 
 
 def test_a_bare_number_is_still_grounded_by_a_qualified_quote():

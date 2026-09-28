@@ -13,12 +13,14 @@ import sys
 
 from pathlib import Path
 
-from app.audit import AuditLog, AuditLogCorrupt
+from app.audit import AuditLog, AuditLogCorrupt, verifies_as_schema_1
 from app.config import get_settings
 from app.corpus import UNLABELED_SCOPE, cached_corpus, corpus_digest
 from app.models import RECORD_SCHEMA_VERSION, AnswerResult
 from app.pipeline import DEFAULT_SCOPES, answer_question
 from app.verify import normalize
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def format_result(result: AnswerResult) -> str:
@@ -80,6 +82,13 @@ def _record_resolves(record) -> tuple[bool, list[str]]:
             if not citation.ok:
                 continue
             path = Path(citation.source_path or "")
+            # The corpus writes source paths relative to where the process
+            # ran. Resolve a relative one against the repository root too, so
+            # the answer does not depend on the operator's working directory.
+            if not path.is_absolute() and not path.is_file():
+                rooted = _REPO_ROOT / path
+                if rooted.is_file():
+                    path = rooted
             if not path.is_file():
                 ok = False
                 lines.append(f"  UNRESOLVABLE  {citation.chunk_id}: no file at {path}")
@@ -251,10 +260,14 @@ def _dispatch(args: argparse.Namespace, settings) -> int:
             print(f"audit chain OK: {len(records)} record(s) in {log.path}")
             return 0
         position, failing = log.first_failing_record()
+        # Old, not edited, only when the record verifies under the schema-1
+        # rule. Its schema_version field alone proves nothing: an editor can
+        # set it, and the message below would then excuse the edit.
         foreign = (
             [position]
             if failing is not None
             and failing.schema_version != RECORD_SCHEMA_VERSION
+            and verifies_as_schema_1(failing, settings.audit_hmac_key)
             else []
         )
         if foreign:
@@ -263,8 +276,11 @@ def _dispatch(args: argparse.Namespace, settings) -> int:
             print(
                 f"{len(foreign)} record(s) in {log.path} were written under an "
                 f"OLDER RECORD SCHEMA and cannot be verified by this build -- "
-                f"their hashes cover fields this version does not write. This "
-                f"is not evidence of tampering. First affected record: "
+                f"their hashes cover fields this version does not write. The "
+                f"first one hashes correctly under the schema-1 rule. With "
+                f"AUDIT_HMAC_KEY set, that means it is unchanged since it was "
+                f"written; unkeyed, anyone with write access to the log could "
+                f"have produced that hash. First affected record: "
                 f"{foreign[0]}. Start a new log, or verify them with the "
                 f"version that wrote them.",
                 file=sys.stderr,

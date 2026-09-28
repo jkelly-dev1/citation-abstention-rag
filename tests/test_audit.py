@@ -107,7 +107,7 @@ def _rechain(log: AuditLog, hmac_key: str | None) -> None:
 
 
 def test_an_unkeyed_chain_accepts_an_editor_who_recomputes_it(tmp_path):
-    """The documented limit, pinned so the README cannot quietly outgrow it.
+    """The documented limit, pinned so the README cannot outgrow it unnoticed.
 
     Unkeyed, "tamper evident" means evident against an edit made in place. An
     editor who changes a record and rebuilds the chain produces a file that
@@ -201,7 +201,7 @@ def test_a_corrupt_line_is_reported_as_a_broken_chain_not_a_traceback(tmp_path):
 
 
 def test_the_cli_reports_a_corrupt_log_instead_of_crashing(tmp_path, monkeypatch, capsys):
-    """End to end, because the finding was about what the operator sees."""
+    """Through the CLI, because the finding was about what the operator sees."""
     import app.cli as cli
     from app.config import Settings
 
@@ -335,7 +335,7 @@ def test_two_writers_cannot_fork_the_chain(tmp_path):
 
     The file then holds two records claiming the same predecessor and
     `verify_chain` rejects everything after them. Nothing here is concurrent,
-    but the first caller to put it behind a web handler would be.
+    but the first caller to place it behind a web handler would be.
 
     Mutation check: remove the `flock` call in `AuditLog.append` and this goes
     red, because the chain forks and verification fails.
@@ -384,18 +384,21 @@ def test_an_older_record_schema_is_not_reported_as_tampering(tmp_path, monkeypat
     import json
 
     import app.cli as cli
+    from app.audit import SCHEMA_2_FIELDS, _hash_payload
     from app.config import Settings
 
     path = tmp_path / "old-schema.jsonl"
     log = AuditLog(path)
     log.append(_record("one"))
 
-    # Rewrite it as a version-1 record: no `schema_version`, and a hash that
-    # was correct for the payload WITHOUT the fields this build adds.
+    # Rewrite it as a genuine version-1 record: none of the fields this build
+    # adds, and a hash computed over the payload without them, which is what
+    # the build that wrote it would have produced.
     raw = json.loads(path.read_text(encoding="utf-8").strip())
-    for field in ("schema_version", "request_id", "ts", "settings_digest",
-                  "corpus_sha256", "raw_output_sha256", "raw_output_length"):
+    for field in SCHEMA_2_FIELDS:
         raw.pop(field, None)
+    payload = {k: v for k, v in raw.items() if k != "record_hash"}
+    raw["record_hash"] = _hash_payload(payload)
     path.write_text(json.dumps(raw) + "\n", encoding="utf-8")
 
     settings = Settings(audit_log_path=str(path))
@@ -404,9 +407,65 @@ def test_an_older_record_schema_is_not_reported_as_tampering(tmp_path, monkeypat
     assert cli.main(["audit-verify"]) == 1
     err = capsys.readouterr().err
     assert "OLDER RECORD SCHEMA" in err
-    assert "not evidence of tampering" in err
+    # The schema-1 hash proves the record unchanged only under a key, and
+    # the message must not claim more than that for an unkeyed log.
+    assert "With AUDIT_HMAC_KEY set, that means it is unchanged" in err
+    assert "unkeyed, anyone with write access to the log could" in err
+    assert "so it is unchanged" not in err
     # Assert the absence: the phrase that sends someone hunting must not appear.
     assert "AUDIT CHAIN BROKEN" not in err
+
+
+def test_an_edited_record_that_claims_an_old_schema_is_still_broken(
+        tmp_path, monkeypatch, capsys):
+    """`schema_version` is inside the record, so an editor can set it.
+
+    An edited record that claims schema "1" must not get the schema message,
+    which tells the operator the record is unchanged. That message needs the
+    record to hash correctly under the schema-1 rule.
+
+    Mutation check: drop the `verifies_as_schema_1` condition in
+    `app/cli.py` and this goes red.
+    """
+    import json
+
+    import app.cli as cli
+    from app.config import Settings
+
+    path = tmp_path / "claims-old.jsonl"
+    log = AuditLog(path, "k")
+    log.append(_record("one"))
+    log.append(_record("two"))
+    raw = [json.loads(line) for line in
+           path.read_text(encoding="utf-8").strip().splitlines()]
+    raw[0]["status"] = "answered-tampered"
+    raw[0]["schema_version"] = "1"
+    path.write_text("\n".join(json.dumps(r) for r in raw) + "\n",
+                    encoding="utf-8")
+
+    settings = Settings(audit_log_path=str(path), audit_hmac_key="k")
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    assert cli.main(["audit-verify"]) == 1
+    err = capsys.readouterr().err
+    assert "AUDIT CHAIN BROKEN" in err
+    assert "OLDER RECORD SCHEMA" not in err
+
+
+def test_removing_the_last_records_is_not_detected(tmp_path):
+    """Pins a documented limit instead of hiding it.
+
+    A truncated log is a shorter chain and every record left in it still
+    verifies, keyed or not: nothing outside the file records how long it was.
+    README.md and SECURITY.md say so. If this ever starts failing, the chain
+    has gained a head anchor and both documents should say that instead.
+    """
+    for key in (None, "k"):
+        log = AuditLog(tmp_path / f"trunc-{key}.jsonl", key)
+        for name in ("one", "two", "three"):
+            log.append(_record(name))
+        lines = log.path.read_text(encoding="utf-8").splitlines()
+        log.path.write_text("\n".join(lines[:-1]) + "\n", encoding="utf-8")
+        assert log.verify_chain() is True
 
 
 def test_a_real_edit_is_still_reported_as_a_broken_chain(tmp_path, monkeypatch, capsys):

@@ -74,7 +74,7 @@ def decide(
         return Decision("abstained", [NO_SUPPORTED_CLAIMS], [], unsupported)
 
     # Some claims survived, but too few. A partly fabricated answer with the
-    # fabrications quietly deleted still reads as authoritative, so refuse it.
+    # fabrications silently deleted still reads as authoritative, so refuse it.
     ratio = len(supported) / len(verdicts)
     if ratio < settings.min_supported_ratio:
         return Decision("abstained", [INSUFFICIENT_SUPPORT], [], unsupported + supported)
@@ -112,20 +112,20 @@ def decide(
         # keeping the best one means this rule cannot empty an answer that the
         # relevance threshold just accepted.
         #
-        # What this does not catch. Sharing one content word is a low bar, and
-        # some padding clears it: asked who approves above 5,000, the mock
-        # serves the CFO sentence and the 500-to-5,000 director sentence,
-        # which share five of the question's words and answer a different
-        # question. Requiring each claim to add a question word no earlier
-        # claim covered would remove that padding, and it would also withhold
-        # a correct part of a legitimately multi-part answer: asked for the
-        # expense approval thresholds, it would serve one band and withhold
-        # the others, because they cover the same question words. Withholding
-        # a true claim somebody asked for is the worse failure for a system
-        # built not to withhold what it can support, so the weaker rule ships
-        # and the gap is stated in the README limits. Telling "same words,
-        # different band" from a real answer needs entailment, which is the
-        # drop-in `claim_coverage` already points at.
+        # Blind spots. Sharing one content word is a low bar, and some padding
+        # clears it: asked who approves above 5,000, the mock serves the CFO
+        # sentence and the 500-to-5,000 director sentence, which share five of
+        # the question's words and answer a different question. Requiring each
+        # claim to add a question word no earlier claim covered would remove
+        # that padding, and it would also withhold a correct part of a
+        # legitimately multi-part answer: asked for the expense approval
+        # thresholds, it would serve one band and withhold the others, because
+        # they cover the same question words. Withholding a true claim somebody
+        # asked for is the worse failure for a system built not to withhold
+        # what it can support, so the weaker rule ships and the gap is stated
+        # in the README limits. Telling "same words, different band" from a
+        # real answer needs entailment, which is the drop-in `claim_coverage`
+        # already points at.
         question_words = content_tokens(question)
         if question_words:
             ranked = sorted(

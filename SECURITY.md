@@ -27,11 +27,13 @@ backports.
 The audit log is hash chained, and what that detects depends on one setting.
 
 With no `AUDIT_HMAC_KEY` (the default), records are chained with a plain
-SHA-256. This detects an edit, a reordering, or a deletion made in place: every
-hash after the change stops matching. It does not detect an editor who changes
-a record and then recomputes the rest of the chain, because the digest is one
-anyone can compute. Treat the unkeyed chain as integrity against corruption and
-accident, not against an adversary with write access to the file.
+SHA-256. This detects an edit, a reordering, or a deletion made in place
+anywhere but the end: every hash after the change stops matching. Removing the
+last records is not detected, keyed or not, because what remains is a shorter
+chain that still verifies. It does not detect an editor who changes a record
+and then recomputes the rest of the chain, because the digest is one anyone can
+compute. Treat the unkeyed chain as integrity against corruption and accident,
+not against an adversary with write access to the file.
 
 With `AUDIT_HMAC_KEY` set, records are chained with an HMAC and re-chaining
 requires the key. An adversary with the log but not the key cannot produce a
@@ -45,7 +47,7 @@ file and is never asked for the previous head hash. Anchoring the head
 somewhere append-only is the standard answer and is not implemented.
 
 Both behaviors are pinned by tests in `tests/test_audit.py`, including the
-unkeyed weakness, so the limitation cannot be quietly outgrown by the README.
+unkeyed weakness, so the README cannot outgrow the limitation unnoticed.
 
 Appends take an exclusive `flock` on the log file, so two writers cannot read
 the same head hash and fork the chain. `flock` is advisory and POSIX-only: a

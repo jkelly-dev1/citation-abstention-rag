@@ -561,7 +561,7 @@ it.
 
 A known limitation, reproduced identically on both models. Case 8 asks two
 things, one of which the corpus answers. Both models answered the expense half
-correctly with three verified claims and said so plainly about the other half.
+correctly with three verified claims and said directly that it could not answer the other half.
 The relevance gate still abstained, because the unanswerable half's words stay
 in the denominator: relevance came out at 0.33 against a 0.40 threshold. That is
 over-abstention, the direction this system prefers to fail in, but it is a real

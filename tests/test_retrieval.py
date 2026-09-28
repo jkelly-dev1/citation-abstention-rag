@@ -40,6 +40,18 @@ def test_scope_filter_runs_before_scoring(chunks, settings):
     assert len(retrieved) == settings.top_k
     assert all(item.chunk.scope == "internal" for item in retrieved)
 
+    # Filtering after scoring but before the top_k slice passes the checks
+    # above and is still wrong: restricted text then feeds the index's
+    # document frequencies and average length, and moves the scores and the
+    # confidence a requester without clearance is answered on. Retrieval over
+    # the whole corpus must equal retrieval over only what the scope admits.
+    visible = [chunk for chunk in chunks if chunk.scope == "internal"]
+    alone, alone_confidence = retrieve(question, visible, {"internal"}, settings)
+    _, confidence = retrieve(question, chunks, {"internal"}, settings)
+    assert [(i.chunk.chunk_id, i.score) for i in retrieved] == [
+        (i.chunk.chunk_id, i.score) for i in alone]
+    assert confidence == alone_confidence
+
 
 def test_no_matching_terms_yields_zero_confidence(chunks, settings):
     retrieved, confidence = retrieve(

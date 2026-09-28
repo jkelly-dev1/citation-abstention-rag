@@ -39,6 +39,58 @@ class LLMProvider(Protocol):
         ...
 
 
+def _brace_span_end(text: str, at: int) -> int:
+    """Index just past the brace span opening at `at`, or -1 if it never
+    closes. Braces inside JSON strings do not count."""
+    depth, in_str, esc = 0, False, False
+    for i in range(at, len(text)):
+        c = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+        elif c == '"':
+            in_str = True
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+    return -1
+
+
+def first_json_object(text: str) -> dict | None:
+    """The first complete JSON object in `text`, or None.
+
+    Decoded from each "{" in turn, so a reply that carries two objects, or a
+    braced word in prose before the object, still yields the object. One span
+    from the first "{" to the last "}" fails on both.
+    """
+    decoder = json.JSONDecoder()
+    at = text.find("{")
+    while at != -1:
+        try:
+            obj, _ = decoder.raw_decode(text, at)
+        except json.JSONDecodeError:
+            # Resume AFTER this brace span, never inside it: a "{" nested
+            # in a truncated reply is a fragment of it (a line item, a
+            # sub-verdict), not the reply. A span that never closes is a
+            # truncated reply, and there is no object to return.
+            end = _brace_span_end(text, at)
+            if end == -1:
+                return None
+            at = text.find("{", end)
+            continue
+        if isinstance(obj, dict):
+            return obj
+        at = text.find("{", at + 1)
+    return None
+
+
 def parse_model_answer(raw: str) -> ModelAnswer:
     """Tolerantly parse a model response into the typed answer.
 
@@ -55,25 +107,30 @@ def parse_model_answer(raw: str) -> ModelAnswer:
     if text.startswith("```"):
         text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
         text = re.sub(r"\n?```$", "", text).strip()
-    if not text.startswith("{"):
-        start = text.find("{")
-        end = text.rfind("}")
-        if start == -1 or end == -1 or end < start:
-            return ModelAnswer(claims=[], parse_error=True)
-        text = text[start : end + 1]
-    try:
-        payload = json.loads(text)
-    except (json.JSONDecodeError, TypeError):
-        return ModelAnswer(claims=[], parse_error=True)
-    if not isinstance(payload, dict):
+    payload = first_json_object(text)
+    if payload is None:
         return ModelAnswer(claims=[], parse_error=True)
 
+    # Valid JSON is not a readable answer. `claims` must be a list and each
+    # entry's `citations` a list; anything else is an unreadable shape and
+    # abstains like a syntax error does, instead of raising out of the loop
+    # below before any audit record is written.
+    raw_claims = payload.get("claims")
+    if raw_claims is None:
+        raw_claims = []
+    if not isinstance(raw_claims, list):
+        return ModelAnswer(claims=[], parse_error=True)
     claims: list[Claim] = []
-    for entry in payload.get("claims") or []:
+    for entry in raw_claims:
         if not isinstance(entry, dict):
             continue
+        raw_citations = entry.get("citations")
+        if raw_citations is None:
+            raw_citations = []
+        if not isinstance(raw_citations, list):
+            return ModelAnswer(claims=[], parse_error=True)
         citations = []
-        for citation in entry.get("citations") or []:
+        for citation in raw_citations:
             if isinstance(citation, dict) and citation.get("chunk_id"):
                 citations.append(
                     Citation(
@@ -82,7 +139,9 @@ def parse_model_answer(raw: str) -> ModelAnswer:
                     )
                 )
         claims.append(Claim(text=str(entry.get("text") or ""), citations=citations))
-    return ModelAnswer(claims=claims, model_declined=bool(payload.get("declined")))
+    # Only a JSON true is a decline. bool("false") is True, and a model that
+    # wrote the string would otherwise be recorded as having declined.
+    return ModelAnswer(claims=claims, model_declined=payload.get("declined") is True)
 
 
 def _parse_blocks(context: str) -> list[tuple[str, str]]:

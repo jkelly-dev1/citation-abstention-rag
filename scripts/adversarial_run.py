@@ -10,8 +10,13 @@ question, five ways at once: a fabricated quote, a chunk id the retriever never
 returned, a reversed polarity, a changed figure, and a fabricated second
 citation attached to an otherwise real claim.
 
-A pass means `unsupported_served` stayed at zero while something tried on
-every case to push a claim through. It does not mean the verifier is complete:
+A pass means every attack claim ended up dropped with the reason code its
+attack is meant to trigger, and nothing unsupported was served. Checking only
+that served claims are supported cannot fail: the policy serves supported
+verdicts and nothing else, so that test passed while a reversed claim, which
+the verifier wrongly supported, went out. Settings are pinned to their
+defaults, so an environment that loosens a threshold cannot turn the run
+green. It does not mean the verifier is complete:
 this adversary uses the five attacks the verifier is known to check for, so it
 measures that the known controls hold, not that there is no sixth attack. The README's honest limits still apply.
 
@@ -34,11 +39,52 @@ from app.evals.golden import GOLDEN_SET  # noqa: E402
 from app.llm import HostileProvider  # noqa: E402
 from app.pipeline import answer_question  # noqa: E402
 
+# The reason each attack, in the order HostileProvider writes them, must be
+# dropped for. The fifth attack (a fabricated second citation on a real claim)
+# is not listed: the real citation still supports the claim, and whether it
+# is served is the policy's call, not the verifier's.
+EXPECTED = ("no_verified_citation", "no_verified_citation",
+            "negation_mismatch", "ungrounded_number")
+UNRETRIEVED_CHUNK = "acme-fy2025-q4-summary#s01"
+
+
+def attack_fired(index: int, text: str, retrieved: set[str]) -> bool:
+    """Whether attack `index` actually attacked on this case.
+
+    The changed-figure attack rewrites the first number in the quote, so on a
+    quote with no number its text IS the quote. The unretrieved-chunk attack
+    cites a real sentence, so for a requester cleared to retrieve that chunk
+    it is a true claim. Neither is an attack there, and neither is expected
+    to be refused.
+    """
+    if index == 1:
+        return UNRETRIEVED_CHUNK not in retrieved
+    if index == 3:
+        return "999" in text
+    return True
+
+
+class RecordingHostile(HostileProvider):
+    """HostileProvider that keeps the claims it sent, so each can be traced."""
+
+    def complete(self, *, question: str, context: str) -> str:
+        import json
+        raw = super().complete(question=question, context=context)
+        self.sent = [claim["text"] for claim in json.loads(raw)["claims"]]
+        return raw
+
 
 def main() -> int:
     import tempfile
 
-    settings = Settings()
+    # Every field at its declared default. Keyword arguments outrank the
+    # environment and any .env file, so nothing outside this script can
+    # loosen what the run checks.
+    settings = Settings(**{name: field.default
+                           for name, field in Settings.model_fields.items()
+                           if not field.is_required()})
+    attacks_missed: list[str] = []
+    attacks_checked = 0
     served_unsupported: list[str] = []
     refused_reasons: dict[str, int] = {}
     answered = 0
@@ -47,10 +93,24 @@ def main() -> int:
         audit = AuditLog(Path(directory) / "adversarial.jsonl",
                          settings.audit_hmac_key)
         for case in GOLDEN_SET:
+            provider = RecordingHostile()
             result = answer_question(
                 case.question, set(case.scopes), settings,
-                provider=HostileProvider(), audit=audit,
+                provider=provider, audit=audit,
             )
+            dropped = {claim.text: claim.reasons for claim in result.dropped}
+            served = {claim.text for claim in result.claims}
+            retrieved = {record.chunk_id for record in result.retrieved}
+            for index, (text, reason) in enumerate(
+                    zip(getattr(provider, "sent", []), EXPECTED)):
+                if not attack_fired(index, text, retrieved):
+                    continue
+                attacks_checked += 1
+                if text in served or reason not in dropped.get(text, []):
+                    attacks_missed.append(
+                        f"{case.id}: expected {reason}, got "
+                        f"{'SERVED' if text in served else dropped.get(text)} "
+                        f"-- {text[:60]}")
             if result.status == "answered":
                 answered += 1
             for claim in result.claims:
@@ -68,19 +128,26 @@ def main() -> int:
           f"provider=hostile")
     print(f"  answered at all          {answered}")
     print(f"  unsupported_served       {len(served_unsupported)}")
+    print(f"  attacks checked          {attacks_checked}")
+    print(f"  attacks not refused      {len(attacks_missed)}")
     print(f"  audit_chain_intact       {'yes' if chain_ok else 'NO'}")
     print("  refusals by reason:")
     for reason, count in sorted(refused_reasons.items(), key=lambda kv: -kv[1]):
         print(f"    {reason:<28} {count}")
 
-    if served_unsupported or not chain_ok:
+    if served_unsupported or attacks_missed or not attacks_checked or not chain_ok:
         print("\nADVERSARIAL RUN FAILED")
         for line in served_unsupported:
             print(f"  served an unsupported claim -- {line}")
+        for line in attacks_missed:
+            print(f"  an attack was not refused for its reason -- {line}")
+        if not attacks_checked:
+            print("  no attack fired, so nothing was tested")
         if not chain_ok:
             print("  the audit chain did not verify")
         return 1
-    print("\nADVERSARIAL RUN PASSED: nothing unsupported was served")
+    print("\nADVERSARIAL RUN PASSED: every attack was refused for its "
+          "reason, and nothing unsupported was served")
     return 0
 
 

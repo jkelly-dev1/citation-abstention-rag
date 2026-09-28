@@ -6,6 +6,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+# The workflow only reads the repository.
+permissions:
+  contents: read
+
 # Cancel an in-flight run when the same branch is pushed again.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -49,14 +53,14 @@ jobs:
         run: python -m app.evals.gate
 
       # A number typed into prose is a copy, and a copy drifts. This rebuilds
-      # every figure in README.md from the tree and exits 1 if one of them no
-      # longer appears, so the prose cannot fall behind the code silently.
+      # the README figures it derives from the tree, exits 1 if one of them no
+      # longer appears, and lists the numbers in the prose it does not derive.
       - name: README numbers
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: python scripts/check_readme_numbers.py
 
-      # The demo is the offline end to end path. Running it in CI keeps
+      # The demo runs the whole offline pipeline. Running it in CI keeps
       # SAMPLE_RUN.md honest: if the demo breaks, the build breaks.
       - name: Demo (offline mock)
         env:
@@ -67,8 +71,8 @@ jobs:
       # questions, so it demonstrates the guardrails on those questions. This
       # runs a provider that attacks the verifier on every case (fabricated
       # quote, unretrieved chunk id, reversed polarity, changed figure, and a
-      # fabricated second citation) and exits 1 if a single unsupported claim
-      # reaches the caller.
+      # fabricated second citation) and exits 1 unless each of the first four
+      # is refused for its own reason code and nothing unsupported is served.
       - name: Adversarial run (hostile provider)
         env:
           PYTHONPATH: ${{ github.workspace }}
@@ -76,7 +80,7 @@ jobs:
 
       # A document with no `scope:` line is withheld from every requester,
       # correctly and silently. This makes the fail-closed visible, so a
-      # corpus edit that quietly removes a document from every answer breaks
+      # corpus edit that removes, without notice, a document from every answer breaks
       # the build instead of being discovered by a reader.
       - name: Corpus check
         env:

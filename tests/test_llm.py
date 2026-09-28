@@ -95,6 +95,11 @@ def test_an_unreadable_reply_is_not_recorded_as_the_model_declining():
     assert honest.model_declined is True
     assert honest.parse_error is False
 
+    # Only a JSON true is a decline: bool("false") is True.
+    for value in ('"false"', '"no"', '1', '"true"'):
+        answer = parse_model_answer('{"claims": [], "declined": %s}' % value)
+        assert answer.model_declined is False, value
+
 
 def test_malformed_citation_entries_are_dropped_not_fatal():
     answer = parse_model_answer(
@@ -125,17 +130,11 @@ def test_every_unreadable_shape_abstains_rather_than_raising():
     The docstring on `parse_model_answer` promises this for every shape, and
     the README row says the same. A truncated reply is the most ordinary
     real-model failure there is: a length cap lands mid-object, and the
-    JSONDecodeError branch is what keeps the pipeline answering with an
-    abstention.
+    branch taken when no complete object decodes is what keeps the pipeline
+    answering with an abstention.
 
-    Mutation check against the parser: make the JSONDecodeError branch raise
-    instead of returning, and this goes red.
-
-    The `not isinstance(payload, dict)` branch is not exercised here and no
-    input can reach it: anything arriving at `json.loads` either starts with
-    `{` or was sliced to start with `{`, and valid JSON beginning with `{` is
-    an object. It is defensive and unreachable, and a test asserting otherwise
-    would be asserting a shape that cannot occur.
+    Mutation check against the parser: make that branch raise instead of
+    returning, and this goes red.
     """
     shapes = {
         "prose, no JSON at all": "I am afraid I cannot help with that.",
@@ -145,6 +144,11 @@ def test_every_unreadable_shape_abstains_rather_than_raising():
         "fenced block wrapping invalid JSON": "```json\n{nope}\n```",
         "prose with an opening brace and no close": "here you go: {claims: ",
         "empty string": "",
+        "claims is a number": '{"claims": 5}',
+        "claims is a boolean": '{"claims": true}',
+        "claims is an object": '{"claims": {"text": "a"}}',
+        "citations is a number": '{"claims": [{"text": "x", "citations": 7}]}',
+        "citations is a string": '{"claims": [{"text": "x", "citations": "c"}]}',
     }
     for label, raw in shapes.items():
         answer = parse_model_answer(raw)
@@ -397,3 +401,22 @@ def test_the_hostile_provider_cannot_get_an_unsupported_claim_served():
     assert "negation_mismatch" in refused
     assert "ungrounded_number" in refused
     assert "no_verified_citation" in refused
+
+
+def test_the_first_complete_object_is_read_when_a_reply_carries_two():
+    """One span from the first "{" to the last "}" failed on a reply with two
+    objects, or a braced word in prose before the object, and abstained."""
+    from app.llm import parse_model_answer
+
+    two = ('{"claims": [{"text": "A", "citations": [{"chunk_id": "c1"}]}]}\n'
+           '{"claims": []}')
+    got = parse_model_answer(two)
+    assert not got.parse_error and [c.text for c in got.claims] == ["A"]
+    prose = 'Answer {draft}: {"claims": [], "declined": true}'
+    got = parse_model_answer(prose)
+    assert not got.parse_error and got.model_declined
+    # A truncated reply is not an object, and the complete object nested
+    # inside it (a fragment of it) is not the reply either.
+    from app.llm import first_json_object
+    assert first_json_object('{"a": {"b": 1}, "c": [') is None
+    assert first_json_object('Result {see below}: {"a": {"b": 1}}') == {"a": {"b": 1}}

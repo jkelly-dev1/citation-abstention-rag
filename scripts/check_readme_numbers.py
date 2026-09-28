@@ -1,4 +1,4 @@
-"""Rebuild every figure in README.md from the tree and compare.
+"""Rebuild README.md's figures from the tree and name those not derived.
 
     python3 scripts/check_readme_numbers.py
 
@@ -93,23 +93,29 @@ def cited_tests_all_exist() -> list[str]:
     return missing
 
 
-def negation_coverage() -> str:
+def negation_coverage() -> dict[str, str]:
     """The 0.92 in README and in app/verify.py, derived from the corpus.
 
     The figure belongs to the third sentence of expense-policy#s01 negated.
     Shorter paraphrases of that sentence score 0.86 and 0.88, so the figure is
-    computed here by running the real function over the real sentence.
+    computed here by running the real function over the real sentence. The
+    README's count of the negated claim's content words, which explains the
+    score, is counted here from the same sentence.
     """
     import re as _re
     sys.path.insert(0, str(ROOT))
     from app.corpus import load_corpus
+    from app.retrieval import content_tokens
     from app.verify import claim_coverage
 
     chunks = {c.chunk_id: c for c in load_corpus(ROOT / "corpus")}
     sentences = _re.split(r"(?<=\.)\s+", chunks["expense-policy#s01"].text.strip())
     quote = next(s for s in sentences if "5,000" in s and "Financial" in s)
     negated = quote.replace("require", "do not require", 1)
-    return f"{claim_coverage(negated, [quote]):.2f}"
+    return {
+        "negation coverage": f"{claim_coverage(negated, [quote]):.2f}",
+        "negation words": f"claim's {len(content_tokens(negated))} content words",
+    }
 
 
 def python_matrix() -> list[str]:
@@ -154,6 +160,10 @@ def held_out_figures() -> dict[str, str]:
     }
 
 
+_NUMBER = (r"(?<![\w.,])(?<![A-Za-z]-)\d(?:\d|,\d{3})*(?:\.\d+)?"
+           r"(?!\w|\.\d|,\d)")
+
+
 def undocumented_figures(text: str, derived: dict) -> list[str]:
     """Numbers in README prose that nothing here derives.
 
@@ -173,13 +183,20 @@ def undocumented_figures(text: str, derived: dict) -> list[str]:
     blank = lambda m: _re.sub(r"[^\n]", " ", m.group(0))
     body = _re.sub(r"```.*?```", blank, text, flags=_re.S)
     body = _re.sub(r"`[^`]*`", blank, body)
-    covered = " ".join(str(v) for v in derived.values())
+    # A number is covered when it IS one of the derived numbers, token for
+    # token. A substring test over the derived strings would treat "7" as
+    # covered because "0.667" contains it, and a figure hidden that way is
+    # neither checked nor listed.
+    covered = {m.group(0) for v in derived.values()
+               for m in _re.finditer(_NUMBER, str(v))}
     out = []
     # Comma-grouped numbers are one figure, so "5,000" is one token and not
     # "5" and "000". A hyphen does not join two numbers into one: the
     # "500-to-5,000" band is two figures. A number hyphenated onto a word, as
-    # in SHA-256, is part of a name and not a figure.
-    for m in _re.finditer(r"(?<![\w.,])(?<![A-Za-z]-)\d(?:\d|,\d{3})*(?:\.\d+)?(?![\w.]|,\d)", body):
+    # in SHA-256, is part of a name and not a figure. Only a digit after a
+    # period continues the number, so a figure that closes a sentence is
+    # still read.
+    for m in _re.finditer(_NUMBER, body):
         token = m.group(0)
         if token in covered:
             continue
@@ -193,12 +210,18 @@ def main() -> int:
     figures = {
         "collected tests": f"{collected_test_count()} tests",
         "golden set cases": f"{golden_case_count()} cases",
-        "negation coverage": negation_coverage(),
+        **negation_coverage(),
         "fabrication cases": fabrication_case_count(),
         **held_out_figures(),
     }
-    for version in python_matrix():
-        figures[f"CI python {version}"] = version
+    # The whole sentence, so a version dropped from the matrix is caught too:
+    # each version alone would still be found in a README listing three.
+    versions = python_matrix()
+    if versions:
+        listed = (versions[0] if len(versions) == 1 else
+                  " and ".join(versions) if len(versions) == 2 else
+                  ", ".join(versions[:-1]) + ", and " + versions[-1])
+        figures["CI python matrix"] = f"CI runs {listed}."
 
     # A phrase can wrap across lines in the source, so compare with runs of
     # whitespace collapsed to one space.
@@ -224,9 +247,12 @@ def main() -> int:
     # Say what is not covered. A checker that reports only its successes lets
     # "every figure is checked" survive on the strength of the figures it
     # happens to check.
+    # Every one of them, not the first few: a truncated list hides exactly
+    # the entries a reader would check it for.
     print(f"  {'NOT derived here':<20} {len(uncovered)} number(s) in prose"
-          + (": " + ", ".join(uncovered[:8]) if uncovered else "")
-          + (", ..." if len(uncovered) > 8 else ""))
+          + (":" if uncovered else ""))
+    for entry in uncovered:
+        print(f"    {entry}")
 
     if failures:
         print("\nREADME NUMBERS FAILED")

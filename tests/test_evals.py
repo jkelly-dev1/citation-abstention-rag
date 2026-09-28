@@ -363,6 +363,67 @@ def test_the_readme_number_checker_derives_the_held_out_miss_rate(
     assert checker.main() == 1
 
 
+def test_the_readme_number_checker_derives_the_negated_claims_word_count(
+    monkeypatch, tmp_path
+):
+    """The content-word count beside the 0.92 is counted, not typed.
+
+    Mutation check: drop the "negation words" row from `negation_coverage`
+    and this goes red, because a wrong count in the README then passes.
+    """
+    import re
+    from pathlib import Path
+
+    import scripts.check_readme_numbers as checker
+
+    text = (Path(__file__).resolve().parents[1] / "README.md").read_text(
+        encoding="utf-8")
+    altered_text, found = re.subn(
+        r"(claim's\s+)(\d+)(\s+content words)",
+        lambda m: f"{m.group(1)}{int(m.group(2)) + 1}{m.group(3)}", text)
+    assert found == 1
+    altered = tmp_path / "README.md"
+    altered.write_text(altered_text, encoding="utf-8")
+    monkeypatch.setattr(checker, "README", altered)
+    assert checker.main() == 1
+
+
+def test_the_readme_number_checker_lists_a_figure_inside_a_derived_one(
+    monkeypatch, tmp_path, capsys
+):
+    """A number the checker does not derive is listed, whatever it resembles.
+
+    The README's retention example becomes "9 years". Nine is not derived,
+    but it is a substring of the derived 0.92, so a check that asks whether
+    a number occurs anywhere in the derived strings would call it covered and
+    leave it off the list. The list is also printed whole, and this entry
+    falls well past the first few.
+
+    Mutation check: compare with `token in " ".join(derived values)` in
+    `undocumented_figures` and this goes red.
+    """
+    import re
+    from pathlib import Path
+
+    import scripts.check_readme_numbers as checker
+
+    text = (Path(__file__).resolve().parents[1] / "README.md").read_text(
+        encoding="utf-8")
+    assert "0.92" in text
+    assert not re.search(r"(?<![\w.,])9(?![\w,]|\.\d)", text)
+    altered_text, found = re.subn(
+        r'"7 years" -> "7 days"', '"9 years" -> "9 days"', text)
+    assert found == 1
+    altered = tmp_path / "README.md"
+    altered.write_text(altered_text, encoding="utf-8")
+    monkeypatch.setattr(checker, "README", altered)
+    capsys.readouterr()
+    checker.main()
+    listed = re.findall(r"^    9 \(prose line ~\d+\)$", capsys.readouterr().out,
+                        re.M)
+    assert len(listed) == 2
+
+
 def test_audit_show_reports_a_span_that_no_longer_resolves(tmp_path, monkeypatch, capsys):
     """The demo of the audit claim: resolve a record back to the source text.
 
@@ -483,8 +544,10 @@ def test_the_adversarial_run_exit_code_says_pass_or_fail(monkeypatch, capsys):
     not just termination.
 
     Mutation check: change the failing `return 1` to `return 0` and this goes
-    red.
+    red; so does dropping `served_unsupported` from the failure condition.
     """
+    import re
+
     # A plain import, not importlib.spec_from_file_location. Both reach the
     # same module, and only a plain import is visible to a static reader.
     import scripts.adversarial_run as module
@@ -493,28 +556,56 @@ def test_the_adversarial_run_exit_code_says_pass_or_fail(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "unsupported_served       0" in out
 
-    # It must be able to fail. Patch the binding the module resolves: it did
-    # `from app.llm import HostileProvider`, so it holds its own reference and
-    # patching app.llm would change nothing it calls.
-    class _Pushover:
-        name = "pushover"
-        model = "pushover-v1"
+    # It must be able to fail on a served unsupported claim alone. Patch the
+    # bindings the module resolves: main() builds `RecordingHostile`, its own
+    # subclass, and calls its own `answer_question`; patching app.llm or
+    # app.pipeline would change nothing it calls. The stand-in sends one
+    # attack, and the patched pipeline refuses that attack for its expected
+    # reason while serving an unsupported claim beside it. Every attack is
+    # then checked and refused, so the served-unsupported check is the only
+    # thing left that can fail the run.
+    class _OneAttack:
+        name = "one-attack"
+        model = "one-attack-v1"
 
-        def complete(self, *, question, context):
-            import json as _json
-            return _json.dumps({"claims": [], "declined": False})
+        def __init__(self):
+            self.sent = [_ATTACK_TEXT]
 
-    monkeypatch.setattr(module, "HostileProvider", _Pushover)
-    # With an adversary that attacks nothing, nothing is served unsupported
-    # either, so a green run is not evidence on its own. The real failure
-    # lever is the served-unsupported check itself.
+    monkeypatch.setattr(module, "RecordingHostile", _OneAttack)
     monkeypatch.setattr(module, "answer_question", _always_serves_unsupported)
     assert module.main() == 1
-    assert "ADVERSARIAL RUN FAILED" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "ADVERSARIAL RUN FAILED" in out
+    assert "served an unsupported claim" in out
+    assert "attacks not refused      0" in out
+    assert "attacks checked          0" not in out
+    assert re.search(r"attacks checked\s+[1-9]", out)
+    assert "an attack was not refused" not in out
+    assert "no attack fired" not in out
+
+
+def test_the_adversarial_run_fails_when_an_attack_gets_through(monkeypatch, capsys):
+    """The run checks each attack's outcome, not only what was served.
+
+    Every served claim is `supported` by construction, so a check on served
+    claims alone cannot fail: when the verifier wrongly supported a reversed
+    claim, that claim was served AS supported and the run printed PASSED.
+    Disable the polarity check and the run must now fail.
+    """
+    import app.verify
+    import scripts.adversarial_run as module
+
+    monkeypatch.setattr(app.verify, "negation_mismatch", lambda *a, **k: False)
+    assert module.main() == 1
+    out = capsys.readouterr().out
+    assert "expected negation_mismatch" in out
+
+
+_ATTACK_TEXT = "an attack claim the verifier refuses"
 
 
 def _always_serves_unsupported(question, scopes, settings, provider=None, audit=None):
-    """A pipeline that serves a claim it knows is unsupported."""
+    """A pipeline that refuses the attack but serves an unsupported claim."""
     from app.models import AnswerResult, ClaimVerdict
 
     return AnswerResult(
@@ -523,4 +614,6 @@ def _always_serves_unsupported(question, scopes, settings, provider=None, audit=
         scopes=sorted(scopes),
         claims=[ClaimVerdict(text="fabricated", supported=False, coverage=0.0,
                              citations=[], reasons=["no_verified_citation"])],
+        dropped=[ClaimVerdict(text=_ATTACK_TEXT, supported=False, coverage=0.0,
+                              citations=[], reasons=["no_verified_citation"])],
     )

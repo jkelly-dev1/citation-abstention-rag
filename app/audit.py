@@ -3,8 +3,7 @@
 Each record is one JSON line. Before writing, `prev_hash` is set to the
 previous record's `record_hash` and this record's hash is computed over its
 canonical payload, which includes `prev_hash`. Editing, reordering, or removing
-a past record therefore breaks every hash after it, and `verify_chain` reports
-the break instead of quietly accepting the file.
+a past record therefore breaks every hash after it, and `verify_chain` reports the break instead of accepting the file.
 
 What the chain does and does not prove depends entirely on the key.
 
@@ -60,6 +59,28 @@ def compute_record_hash(record: TraceRecord, hmac_key: str | None = None) -> str
     return _hash_payload(record.payload_for_hash(), hmac_key)
 
 
+#: The fields record schema 2 added. A schema-1 record's hash covers its
+#: payload without them, and a schema-1 record cannot carry them.
+SCHEMA_2_FIELDS = ("schema_version", "request_id", "ts", "settings_digest",
+                   "corpus_sha256", "raw_output_sha256", "raw_output_length")
+
+
+def verifies_as_schema_1(record: TraceRecord, hmac_key: str | None = None) -> bool:
+    """True if the record hashes correctly under the schema-1 payload rule.
+
+    This is what lets `audit-verify` say a failing record is OLD rather than
+    EDITED. The record's own `schema_version` cannot say it: that field is
+    inside the record, and anyone who edits the record can set it.
+    """
+    payload = record.payload_for_hash()
+    defaults = TraceRecord.model_fields
+    for field in SCHEMA_2_FIELDS:
+        if payload.get(field) != defaults[field].default:
+            return False
+        payload.pop(field, None)
+    return _hash_payload(payload, hmac_key) == record.record_hash
+
+
 class AuditLog:
     def __init__(self, path: str | Path, hmac_key: str | None = None) -> None:
         self.path = Path(path)
@@ -97,7 +118,7 @@ class AuditLog:
         hash, both compute `prev_hash` from it, and both append: the file then
         holds two records claiming the same predecessor, and `verify_chain`
         rejects the whole log from that point on. Nothing in this repository
-        is concurrent, but the first caller to put it behind a web handler
+        is concurrent, but the first caller to place it behind a web handler
         would be.
 
         The lock is taken before the head is read. Reading the head and then
@@ -169,6 +190,11 @@ class AuditLog:
 
     def verify_chain(self) -> bool:
         """True only if every record hashes correctly and links its predecessor.
+
+        It cannot see records removed from the END. A truncated log is a
+        shorter chain, and every record left in it still verifies, keyed or
+        not, because nothing outside the file records how long it was.
+        SECURITY.md says so, and a test pins it.
 
         A line that cannot be parsed is a broken chain, not an error to raise
         at the caller: `audit-verify` exists to answer this question, and a

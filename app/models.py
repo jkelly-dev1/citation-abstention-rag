@@ -151,7 +151,8 @@ class AnswerResult(BaseModel):
 #: evidence, it is a schema boundary, and reporting it as "AUDIT CHAIN BROKEN"
 #: tells an operator their log was altered when it was not. Records carry the
 #: version that wrote them so the two can be told apart.
-#: Records written before this field existed parse as "1" by default.
+#: Records written before this field existed parse with an empty
+#: `schema_version`, the default below.
 RECORD_SCHEMA_VERSION = "2"
 
 
